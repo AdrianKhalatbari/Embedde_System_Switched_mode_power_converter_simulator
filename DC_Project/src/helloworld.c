@@ -49,6 +49,10 @@ int main(void)
     params_init();
 
     pi_t pi;
+    /* --- Step 9 simple scheduler timers --- */
+    static XTime t_btn   = 0;
+    static XTime t_ctrl  = 0;
+    static XTime t_print = 0;
     pi_init(&pi, params_get_kp(), params_get_ki(), 0.0f, 1.0f);
 
     uart_cmd_init();
@@ -80,49 +84,112 @@ int main(void)
     // XTime t_last_print = 0;
     // XTime t_now;
 
+
     while (1) {
 
-        /* Step 4: UART commands must be processed continuously */
+        XTime now;
+        XTime_GetTime(&now);
+
+        if (t_btn == 0)   t_btn   = now;
+        if (t_ctrl == 0)  t_ctrl  = now;
+        if (t_print == 0) t_print = now;
+
+        /* Always process UART (non-blocking) */
         uart_cmd_process();
 
-        /* Step 7: run model and print u3 periodically (0.1�1s) */
+        /* ---------------- Buttons task (every 10 ms) ---------------- */
+        if ((now - t_btn) >= (COUNTS_PER_SECOND / 100)) {
+            t_btn = now;
+
+            /* If UART owns CONFIG lock => ignore buttons */
+            if (lock_get_owner() != LOCK_OWNER_UART) {
+
+                uint32_t ev = buttons_get_events();
+                if (ev) {
+
+                    system_mode_t mode = get_mode();
+
+                    /* BTN0: mode cycle */
+                    if (ev & EV_BTN0) {
+                        if (mode == MODE_IDLE)        mode = MODE_CONFIG;
+                        else if (mode == MODE_CONFIG) mode = MODE_MODULATING;
+                        else                          mode = MODE_IDLE;
+
+                        set_mode(mode);
+                        leds_set_for_mode(mode);
+
+                        /* Optional: reset when entering MODULATING */
+                        if (mode == MODE_MODULATING) {
+                            pi.integ = 0.0f;
+                            model_reset();
+                        }
+
+                        if (mode == MODE_CONFIG)           print_config_status();
+                        else if (mode == MODE_MODULATING)  print_ref();
+                    }
+
+                    /* CONFIG buttons */
+                    if (mode == MODE_CONFIG) {
+
+                        if (ev & EV_BTN1) {
+                            params_toggle_selected();
+                            xil_printf("Selected: %s\r\n",
+                                       (params_get_selected() == PARAM_KP) ? "Kp" : "Ki");
+                            print_config_status();
+                        }
+
+                        if (ev & EV_BTN2) {
+                            params_dec_selected();
+                            print_config_status();
+                        }
+
+                        if (ev & EV_BTN3) {
+                            params_inc_selected();
+                            print_config_status();
+                        }
+                    }
+
+                    /* MODULATING buttons */
+                    if (mode == MODE_MODULATING) {
+
+                        if (ev & EV_BTN2) {
+                            params_dec_ref();
+                            print_ref();
+                        }
+
+                        if (ev & EV_BTN3) {
+                            params_inc_ref();
+                            print_ref();
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ---------------- Control + Model task (every 10 ms) ---------------- */
         if (get_mode() == MODE_MODULATING) {
 
-            static XTime t_last_ctrl  = 0;
-            static XTime t_last_print = 0;
-            XTime t_now;
+            if ((now - t_ctrl) >= (COUNTS_PER_SECOND / 100)) {
+                t_ctrl = now;
 
-            XTime_GetTime(&t_now);
-            if (t_last_ctrl  == 0) t_last_ctrl  = t_now;
-            if (t_last_print == 0) t_last_print = t_now;
+                float meas = model_get_u3();
 
-            /* Run controller+model every 10 ms */
-            if ((t_now - t_last_ctrl) >= (COUNTS_PER_SECOND / 100)) {
-                t_last_ctrl = t_now;
-
-                /* Measurement from model */
-                float meas = model_get_u3();   /* u3 */
-
-                /* Clamp measurement (anti-blowup) */
+                /* clamp measurement (anti-blowup) */
                 if (meas > 5.0f) meas = 5.0f;
                 if (meas < 0.0f) meas = 0.0f;
 
-                /* Reference from UI/UART */
                 float ref = params_get_ref();
 
-                /* Update PI gains live */
+                /* live gains */
                 pi.kp = params_get_kp();
                 pi.ki = params_get_ki();
 
-                /* PI control (0..1 due to saturation inside pi_step) */
-                float u = pi_step(&pi, ref, meas);
-
-                /* Apply control to model */
+                float u  = pi_step(&pi, ref, meas);
                 float u3 = model_step(u);
 
-                /* Print every 5 seconds */
-                if ((t_now - t_last_print) >= (5 * COUNTS_PER_SECOND)) {
-                    t_last_print = t_now;
+                /* ---------------- Print task (every 5 s) ---------------- */
+                if ((now - t_print) >= (5 * COUNTS_PER_SECOND)) {
+                    t_print = now;
 
                     int ref_m = (int)(ref * 1000.0f);
                     int u_m   = (int)(u   * 1000.0f);
@@ -131,84 +198,17 @@ int main(void)
                     int u3_abs = (u3_m < 0) ? -u3_m : u3_m;
 
                     xil_printf("CL: ref=%d.%03d u=%d.%03d u3=%s%d.%03d\r\n",
-                            ref_m/1000, ref_m%1000,
-                            u_m/1000,   u_m%1000,
-                            (u3_m < 0) ? "-" : "",
-                            u3_abs/1000, u3_abs%1000);
+                               ref_m/1000, ref_m%1000,
+                               u_m/1000,   u_m%1000,
+                               (u3_m < 0) ? "-" : "",
+                               u3_abs/1000, u3_abs%1000);
                 }
             }
-
         } else {
-            /* not modulating -> reset integrator and timers */
+            /* Not modulating: prevent windup, and reset print timer so it doesn't "burst" */
             pi.integ = 0.0f;
+            t_print = now;
         }
-
-
-        if (lock_get_owner() == LOCK_OWNER_UART) {
-            /* UART owns CONFIG lock => buttons disabled */
-            continue;
-        }
-
-        /* Step 3: Button events */
-        uint32_t ev = buttons_get_events();
-        if (ev == 0) {
-            /* small delay to reduce CPU usage */
-            for (volatile int i = 0; i < 200000; i++) { }
-            continue;
-        }
-
-        system_mode_t mode = get_mode();
-
-        /* BTN0: change mode */
-        if (ev & EV_BTN0) {
-            if (mode == MODE_IDLE)        mode = MODE_CONFIG;
-            else if (mode == MODE_CONFIG) mode = MODE_MODULATING;
-            else                           mode = MODE_IDLE;
-
-            set_mode(mode);
-            leds_set_for_mode(mode);
-
-            if (mode == MODE_CONFIG)      print_config_status();
-            else if (mode == MODE_MODULATING) print_ref();
-        }
-
-        /* CONFIG mode buttons */
-        if (mode == MODE_CONFIG) {
-
-            if (ev & EV_BTN1) {
-                params_toggle_selected();
-                xil_printf("Selected: %s\r\n",
-                           (params_get_selected() == PARAM_KP) ? "Kp" : "Ki");
-                print_config_status();
-            }
-
-            if (ev & EV_BTN2) {
-                params_dec_selected();
-                print_config_status();
-            }
-
-            if (ev & EV_BTN3) {
-                params_inc_selected();
-                print_config_status();
-            }
-        }
-
-        /* MODULATING mode buttons */
-        if (mode == MODE_MODULATING) {
-
-            if (ev & EV_BTN2) {
-                params_dec_ref();
-                print_ref();
-            }
-
-            if (ev & EV_BTN3) {
-                params_inc_ref();
-                print_ref();
-            }
-        }
-
-        /* debounce */
-        for (volatile int i = 0; i < 800000; i++) { }
     }
 
     cleanup_platform();
