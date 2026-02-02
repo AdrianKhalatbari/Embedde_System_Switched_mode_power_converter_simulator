@@ -48,12 +48,12 @@ int main(void)
 
     params_init();
 
+    pi_t pi;
+    pi_init(&pi, params_get_kp(), params_get_ki(), 0.0f, 1.0f);
+
     uart_cmd_init();
 
     model_reset();
-
-    pi_t pi;
-    pi_init(&pi, 0.5f, 0.1f, 0.0f, 1.0f);
 
     /* Fake measurement starts at 0, reference is 1 */
     float ref = 1.0f;
@@ -85,31 +85,62 @@ int main(void)
         /* Step 4: UART commands must be processed continuously */
         uart_cmd_process();
 
-        /* Step 7: run model and print u3 periodically (0.1–1s) */
+        /* Step 7: run model and print u3 periodically (0.1ï¿½1s) */
         if (get_mode() == MODE_MODULATING) {
 
-            float uin = params_get_ref();
-            float u3  = model_step(uin);
-
+            static XTime t_last_ctrl  = 0;
+            static XTime t_last_print = 0;
+            XTime t_now;
 
             XTime_GetTime(&t_now);
-
-            /* print every 1 second */
+            if (t_last_ctrl  == 0) t_last_ctrl  = t_now;
             if (t_last_print == 0) t_last_print = t_now;
 
-            if ((t_now - t_last_print) > (5 * COUNTS_PER_SECOND)) {
-                t_last_print = t_now;
+            /* Run controller+model every 10 ms */
+            if ((t_now - t_last_ctrl) >= (COUNTS_PER_SECOND / 100)) {
+                t_last_ctrl = t_now;
 
-                int u3_m  = (int)(u3 * 1000000.0f);
-                int in_m  = (int)(uin * 1000.0f);
+                /* Measurement from model */
+                float meas = model_get_u3();   /* u3 */
 
-                xil_printf("MODEL: uin=%d.%03d u3=%d.%06d\r\n",
-                    in_m/1000, in_m%1000,
-                    u3_m/1000000, u3_m%1000000);
+                /* Clamp measurement (anti-blowup) */
+                if (meas > 5.0f) meas = 5.0f;
+                if (meas < 0.0f) meas = 0.0f;
+
+                /* Reference from UI/UART */
+                float ref = params_get_ref();
+
+                /* Update PI gains live */
+                pi.kp = params_get_kp();
+                pi.ki = params_get_ki();
+
+                /* PI control (0..1 due to saturation inside pi_step) */
+                float u = pi_step(&pi, ref, meas);
+
+                /* Apply control to model */
+                float u3 = model_step(u);
+
+                /* Print every 5 seconds */
+                if ((t_now - t_last_print) >= (5 * COUNTS_PER_SECOND)) {
+                    t_last_print = t_now;
+
+                    int ref_m = (int)(ref * 1000.0f);
+                    int u_m   = (int)(u   * 1000.0f);
+
+                    int u3_m   = (int)(u3 * 1000.0f);
+                    int u3_abs = (u3_m < 0) ? -u3_m : u3_m;
+
+                    xil_printf("CL: ref=%d.%03d u=%d.%03d u3=%s%d.%03d\r\n",
+                            ref_m/1000, ref_m%1000,
+                            u_m/1000,   u_m%1000,
+                            (u3_m < 0) ? "-" : "",
+                            u3_abs/1000, u3_abs%1000);
+                }
             }
+
         } else {
-            /* reset timer when not modulating so it doesn't "burst" on re-enter */
-            t_last_print = 0;
+            /* not modulating -> reset integrator and timers */
+            pi.integ = 0.0f;
         }
 
 

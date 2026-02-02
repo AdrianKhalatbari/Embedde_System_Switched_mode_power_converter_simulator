@@ -76,3 +76,8 @@ float model_step(float uin)
     /* Output u3 */
     return x[5];
 }
+
+float model_get_u3(void)
+{
+    return x[5];
+}
