@@ -56,8 +56,8 @@ int main(void)
     model_reset();
 
     /* Fake measurement starts at 0, reference is 1 */
-    float ref = 1.0f;
-    float meas = 0.0f;
+    //float ref = 1.0f;
+    //float meas = 0.0f;
 
     /* This is just a test for step 6 */
     // for (int k = 0; k < 10; k++) {
@@ -77,8 +77,8 @@ int main(void)
     set_mode(MODE_IDLE);
     leds_set_for_mode(get_mode());
 
-    XTime t_last_print = 0;
-    XTime t_now;
+    // XTime t_last_print = 0;
+    // XTime t_now;
 
     while (1) {
 
