@@ -8,9 +8,9 @@ LD_SRCS += \
 
 C_SRCS += \
 ../src/buttons.c \
-../src/helloworld.c \
 ../src/leds.c \
 ../src/lock.c \
+../src/main.c \
 ../src/mode.c \
 ../src/model.c \
 ../src/params.c \
@@ -20,9 +20,9 @@ C_SRCS += \
 
 OBJS += \
 ./src/buttons.o \
-./src/helloworld.o \
 ./src/leds.o \
 ./src/lock.o \
+./src/main.o \
 ./src/mode.o \
 ./src/model.o \
 ./src/params.o \
@@ -32,9 +32,9 @@ OBJS += \
 
 C_DEPS += \
 ./src/buttons.d \
-./src/helloworld.d \
 ./src/leds.d \
 ./src/lock.d \
+./src/main.d \
 ./src/mode.d \
 ./src/model.d \
 ./src/params.d \
